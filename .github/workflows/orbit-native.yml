@@ -1,0 +1,163 @@
+name: Orbit pinned native extensions
+on:
+  push:
+    branches: [orb-1013-native-artifacts]
+    paths: [.github/workflows/orbit-native.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: linux-amd64
+            release_arch: linux-x86_64
+            extension_arch: linux_amd64
+            native_sha: f3de0f9be86fffd0919bc7a7f65699d1b099d0a1df7115142fa1606ba83c94c4
+            cli_sha: 381d0a83ecabb00c2f1e738710e3ec6763a7a1946de2aad62e76be4962f66879
+            fts_sha: 742f2756c2f80bcd1886b6ee0446483038cff0ecf6cf47f698bc6fe855cbaef6
+            container: quay.io/pypa/manylinux_2_28_x86_64
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+            release_arch: linux-aarch64
+            extension_arch: linux_arm64
+            native_sha: 0dad6e03cf644491f7d50b9c218b9e85c983ceaed77a14338c33fb75f2ae39ee
+            cli_sha: 2e44c1895f0303fd6093ff64b9414e4b5a120d4df8e03f0d76e90bd1ea60a8e5
+            fts_sha: b8675b086664e3d6742330a517c5b619f0ac10dd094d250f12bef9822a8d5750
+            container: quay.io/pypa/manylinux_2_28_aarch64
+          - os: macos-14
+            target: darwin-arm64
+            release_arch: osx-arm64
+            extension_arch: osx_arm64
+            native_sha: 573a54126e2e1d4609680c8becee4399038ad82d3515f4d464bc481e4515c4b1
+            cli_sha: f2d5a4b4da963886d675163a085ae9024d6bf008485d26440172e9e952685bbd
+            fts_sha: 248332de781a7781f612a55b5397e88f58f1f1ba2a973836ada199eab0f6bf10
+          - os: macos-15-intel
+            target: darwin-amd64
+            release_arch: osx-x86_64
+            extension_arch: osx_amd64
+            native_sha: 9ec18274694ed3cc312a6d6840b9261d94dcd0c34ca87ad024dc3c553acd3e6e
+            cli_sha: 14e19e16d84cf95e467f1e731ece92a290951bcf463bc7a5154f4e665e132a08
+            fts_sha: c86f427503555a3ccdc55eb66a8d82793a206aac599a6092f7d1d4eb50c21403
+          - os: windows-2022
+            target: windows-amd64
+            release_arch: windows-x86_64
+            extension_arch: win_amd64
+            native_sha: 8a1a6b68acbaee7fad8c0ec797eadefce1f0866ea75db45239bcf41291a49c79
+            cli_sha: 68386df8bfde1f8842d01ea1352e1ecb813856b03f1b8e52021a00edc38a1f77
+            fts_sha: 7b6132ae6a554e3eeb3c4b0da7e2eb5c483b258b31e848a0e3d6000ac29885ee
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: LadybugDB/ladybug
+          ref: c473940c7eafa27413264c907a5e781a8b3f0a4d
+          path: ladybug
+      - uses: actions/checkout@v4
+        with:
+          ref: 25bd6b6377f988875e8e92034c3a5e3a5bbc3758
+          path: ladybug/extension
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Acquire pinned ABI libraries and FTS
+        shell: bash
+        env:
+          RELEASE_ARCH: ${{ matrix.release_arch }}
+          EXTENSION_ARCH: ${{ matrix.extension_arch }}
+          NATIVE_SHA: ${{ matrix.native_sha }}
+          CLI_SHA: ${{ matrix.cli_sha }}
+          FTS_SHA: ${{ matrix.fts_sha }}
+        run: |
+          mkdir -p prebuilt out
+          if [[ "$RELEASE_ARCH" == windows-* ]]; then suffix=zip; else suffix=tar.gz; fi
+          curl -fLSs "https://github.com/LadybugDB/ladybug/releases/download/v0.21.2/liblbug-$RELEASE_ARCH.$suffix" -o native.archive
+          curl -fLSs "https://github.com/LadybugDB/ladybug/releases/download/v0.21.2/lbug_cli-$RELEASE_ARCH.$suffix" -o cli.archive
+          python - <<'PY'
+          import hashlib, os, pathlib, tarfile, zipfile
+          for name, key in [('native.archive', 'NATIVE_SHA'), ('cli.archive', 'CLI_SHA')]:
+              if hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest() != os.environ[key]:
+                  raise SystemExit('Checksum mismatch: ' + name)
+          for name in ['native.archive', 'cli.archive']:
+              if os.environ['RELEASE_ARCH'].startswith('windows'):
+                  with zipfile.ZipFile(name) as archive: archive.extractall('prebuilt')
+              else:
+                  with tarfile.open(name) as archive: archive.extractall('prebuilt', filter='data')
+          PY
+          curl -fLSs "https://extension.ladybugdb.com/v0.21.0/$EXTENSION_ARCH/fts/libfts.lbug_extension" -o out/libfts.lbug_extension
+          python -c 'import hashlib,os,pathlib; assert hashlib.sha256(pathlib.Path("out/libfts.lbug_extension").read_bytes()).hexdigest() == os.environ["FTS_SHA"]'
+      - name: Build direct INT8 vector extension
+        shell: bash
+        run: |
+          if [[ -f /opt/rh/gcc-toolset-13/enable ]]; then source /opt/rh/gcc-toolset-13/enable; fi
+          python -m pip install cmake
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            cmake -S ladybug -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_EXTENSIONS=vector -DBUILD_TESTS=OFF -DBUILD_SHELL=OFF -DBUILD_STATIC_LBUG=OFF
+          else
+            cmake -S ladybug -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_EXTENSIONS=vector -DBUILD_TESTS=OFF -DBUILD_SHELL=OFF -DBUILD_LBUG=OFF -DLBUG_API_USE_PRECOMPILED_LIB=ON
+          fi
+          cmake --build build --config Release --target lbug_vector_extension --parallel 4
+          python -c 'import pathlib,shutil; shutil.copy2(next(pathlib.Path("ladybug/extension/vector/build").rglob("libvector.lbug_extension")), "out/libvector.lbug_extension")'
+      - name: Verify live FTS deletes and direct INT8 search
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, pathlib, re, subprocess
+          root = pathlib.Path.cwd()
+          exe = next((root / 'prebuilt').rglob('lbug.exe' if os.name == 'nt' else 'lbug'))
+          statements = [
+              f"LOAD EXTENSION '{(root / 'out/libfts.lbug_extension').as_posix()}';",
+              f"LOAD EXTENSION '{(root / 'out/libvector.lbug_extension').as_posix()}';",
+              "CREATE NODE TABLE D(id INT64, name STRING, PRIMARY KEY(id));",
+              "CREATE (:D {id:1,name:'b.go'}),(:D {id:2,name:'beta.go'});",
+              "CALL CREATE_FTS_INDEX('D','fts_probe',['name'],stemmer := 'none');",
+              "MATCH (d:D) DELETE d;",
+              "MATCH (d:D) RETURN count(d) AS remaining;",
+              "CREATE NODE TABLE E(id STRING, vec INT8[4], PRIMARY KEY(id));",
+              "CREATE (:E {id:'orbit_int8_probe',vec:CAST([127,0,0,0],'INT8[4]')});",
+              "CALL CREATE_VECTOR_INDEX('E','vec_probe','vec',metric := 'cosine',quantization := 'none');",
+              "CALL QUERY_VECTOR_INDEX('E','vec_probe',CAST([127,0,0,0],'INT8[4]'),1) RETURN node.id, distance;",
+              ':quit',
+          ]
+          env = dict(os.environ)
+          env['LD_LIBRARY_PATH'] = str(exe.parent)
+          env['DYLD_LIBRARY_PATH'] = str(exe.parent)
+          env['PATH'] = str(exe.parent) + os.pathsep + env['PATH']
+          result = subprocess.run([str(exe), ':memory:', '-p', str(root), '-m', 'csv', '-s', '-b'], input='\n'.join(statements)+'\n', text=True, capture_output=True, env=env, timeout=120)
+          output = result.stdout + result.stderr
+          output = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', output)
+          print(output)
+          if result.returncode or re.search(r'(?i)(error:|exception|failed|inconsistent)', output) or not re.search(r'(?m)^orbit_int8_probe,0(?:\.0+)?$', output) or not re.search(r'(?m)^remaining\r?\n0$', output):
+              raise SystemExit('Native extension qualification failed')
+          PY
+      - name: Archive qualified companions
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          tar -czf "orbit-extensions-$TARGET.tar.gz" -C out libfts.lbug_extension libvector.lbug_extension
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orbit-extensions-${{ matrix.target }}
+          path: orbit-extensions-${{ matrix.target }}.tar.gz
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: artifacts
+      - name: Publish qualified immutable inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd artifacts
+          sha256sum orbit-extensions-*.tar.gz > SHA256SUMS
+          gh release create orbit-native-v0.21.2-25bd6b6 --repo "$GITHUB_REPOSITORY" --target 25bd6b6377f988875e8e92034c3a5e3a5bbc3758 --title 'Orbit native extensions for Ladybug 0.21.2' --notes 'Direct INT8 vector rebuilt from 25bd6b6377f988875e8e92034c3a5e3a5bbc3758 against Ladybug c473940c7eafa27413264c907a5e781a8b3f0a4d (0.21.2 / extension ABI 0.21.0). Includes the matching official FTS companion. Each platform passes live FTS stopword deletion and direct INT8 search before publication. Archive hashes are recorded in SHA256SUMS.' orbit-extensions-*.tar.gz SHA256SUMS
