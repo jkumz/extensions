@@ -61,7 +61,12 @@ jobs:
         with:
           ref: 25bd6b6377f988875e8e92034c3a5e3a5bbc3758
           path: ladybug/extension
+      - name: Use container Python
+        if: runner.os == 'Linux'
+        shell: bash
+        run: echo /opt/python/cp312-cp312/bin >> "$GITHUB_PATH"
       - uses: actions/setup-python@v5
+        if: runner.os != 'Linux'
         with:
           python-version: '3.12'
       - name: Acquire pinned ABI libraries and FTS
@@ -96,7 +101,14 @@ jobs:
           if [[ -f /opt/rh/gcc-toolset-13/enable ]]; then source /opt/rh/gcc-toolset-13/enable; fi
           python -m pip install cmake
           if [[ "$RUNNER_OS" == Windows ]]; then
-            cmake -S ladybug -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_EXTENSIONS=vector -DBUILD_TESTS=OFF -DBUILD_SHELL=OFF -DBUILD_STATIC_LBUG=OFF
+            python - <<'PY'
+          import pathlib
+          root = pathlib.Path.cwd()
+          implib = next((root / 'prebuilt').rglob('lbug_shared.lib'))
+          dll = next((root / 'prebuilt').rglob('lbug_shared.dll'))
+          (root / 'import-lbug.cmake').write_text('if(NOT TARGET lbug)\nadd_library(lbug SHARED IMPORTED GLOBAL)\nset_target_properties(lbug PROPERTIES IMPORTED_IMPLIB "'+implib.as_posix()+'" IMPORTED_LOCATION "'+dll.as_posix()+'")\nendif()\n')
+          PY
+            cmake -S ladybug -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_EXTENSIONS=vector -DBUILD_TESTS=OFF -DBUILD_SHELL=OFF -DBUILD_LBUG=OFF -DLBUG_API_USE_PRECOMPILED_LIB=ON -DCMAKE_PROJECT_INCLUDE="$PWD/import-lbug.cmake"
           else
             cmake -S ladybug -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_EXTENSIONS=vector -DBUILD_TESTS=OFF -DBUILD_SHELL=OFF -DBUILD_LBUG=OFF -DLBUG_API_USE_PRECOMPILED_LIB=ON
           fi
@@ -124,8 +136,8 @@ jobs:
               ':quit',
           ]
           env = dict(os.environ)
-          env['LD_LIBRARY_PATH'] = str(exe.parent)
-          env['DYLD_LIBRARY_PATH'] = str(exe.parent)
+          env['LD_LIBRARY_PATH'] = str(exe.parent) + os.pathsep + env.get('LD_LIBRARY_PATH', '')
+          env['DYLD_LIBRARY_PATH'] = str(exe.parent) + os.pathsep + env.get('DYLD_LIBRARY_PATH', '')
           env['PATH'] = str(exe.parent) + os.pathsep + env['PATH']
           result = subprocess.run([str(exe), ':memory:', '-p', str(root), '-m', 'csv', '-s', '-b'], input='\n'.join(statements)+'\n', text=True, capture_output=True, env=env, timeout=120)
           output = result.stdout + result.stderr
