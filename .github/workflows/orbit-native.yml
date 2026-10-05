@@ -95,11 +95,21 @@ jobs:
           PY
           curl -fLSs "https://extension.ladybugdb.com/v0.21.0/$EXTENSION_ARCH/fts/libfts.lbug_extension" -o out/libfts.lbug_extension
           python -c 'import hashlib,os,pathlib; assert hashlib.sha256(pathlib.Path("out/libfts.lbug_extension").read_bytes()).hexdigest() == os.environ["FTS_SHA"]'
+      - name: Install manylinux OpenSSL development files
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          yum install -y openssl3-devel
+          echo "LD_LIBRARY_PATH=/usr/lib64/openssl3:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
       - name: Build direct INT8 vector extension
         shell: bash
         run: |
           if [[ -f /opt/rh/gcc-toolset-13/enable ]]; then source /opt/rh/gcc-toolset-13/enable; fi
           python -m pip install cmake
+          extra_flags=()
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            extra_flags=(-DOPENSSL_ROOT_DIR=/usr/lib64/openssl3 -DOPENSSL_INCLUDE_DIR=/usr/include/openssl3 -DOPENSSL_CRYPTO_LIBRARY=/usr/lib64/openssl3/libcrypto.so -DOPENSSL_SSL_LIBRARY=/usr/lib64/openssl3/libssl.so)
+          fi
           if [[ "$RUNNER_OS" == Windows ]]; then
             python - <<'PY'
           import pathlib
@@ -110,7 +120,7 @@ jobs:
           PY
             cmake -S ladybug -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_EXTENSIONS=vector -DBUILD_TESTS=OFF -DBUILD_SHELL=OFF -DBUILD_LBUG=OFF -DLBUG_API_USE_PRECOMPILED_LIB=ON -DCMAKE_PROJECT_INCLUDE="$PWD/import-lbug.cmake"
           else
-            cmake -S ladybug -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_EXTENSIONS=vector -DBUILD_TESTS=OFF -DBUILD_SHELL=OFF -DBUILD_LBUG=OFF -DLBUG_API_USE_PRECOMPILED_LIB=ON
+            cmake -S ladybug -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_EXTENSIONS=vector -DBUILD_TESTS=OFF -DBUILD_SHELL=OFF -DBUILD_LBUG=OFF -DLBUG_API_USE_PRECOMPILED_LIB=ON "${extra_flags[@]}"
           fi
           cmake --build build --config Release --target lbug_vector_extension --parallel 4
           python -c 'import pathlib,shutil; shutil.copy2(next(pathlib.Path("ladybug/extension/vector/build").rglob("libvector.lbug_extension")), "out/libvector.lbug_extension")'
